@@ -7,3 +7,4 @@ results/*
 /data/synthetic/large-*/**
 !/data/synthetic/large-*/README.md
 /data/synthetic/size-timing-*/
+runs/
