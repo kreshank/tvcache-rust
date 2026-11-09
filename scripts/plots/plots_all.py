@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 
-from common import ROOT, parser, read_csv, eviction_cells
+from common import ROOT, Run, parser, read_csv, eviction_cells
 import plots_capacity
 import plots_tradeoffs
 import plots_reconstruction
@@ -19,9 +19,21 @@ PLOTS = {"seed_summary": plots_seed_summary, "capacity": plots_capacity, "tradeo
          "scaling": plots_scaling, "paper": plots_paper}
 
 
-def gallery(directory, figures, source, skipped, cells):
+def gallery(directory, figures, source, skipped, cells, policies=None):
     cards, markdown = [], [f"# Plots: {source.name}", "", f"Input: `{source}`", "",
         "Replay estimates are not measured training speedups. Reference panels, when present, use unmatched workloads.", ""]
+    metadata_path = source / "run.json"
+    metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+    notes = metadata.get("plot_notes", [])
+    related = metadata.get("related_galleries", [])
+    for note in notes:
+        markdown.extend([str(note), ""])
+    if policies:
+        markdown.extend(["Displayed policies: " + ", ".join(f"`{name}`" for name in policies) + ".", ""])
+    if related:
+        markdown.extend(["## Focused views", ""])
+        markdown.extend(f"- [{item['label']}]({item['path']})" for item in related)
+        markdown.append("")
     pressure_note = ""
     if cells:
         zero = sum(c["maximum_evictions"] == 0 for c in cells)
@@ -49,6 +61,14 @@ def gallery(directory, figures, source, skipped, cells):
         'img{width:100%;height:auto}h2{font-size:18px}p{line-height:1.5;white-space:pre-line}a{color:#0072b2}</style>'
     page += f'<h1>TVCache · {html.escape(source.name)}</h1><p>Input: {html.escape(str(source))}</p>'
     page += '<p>Replay estimates are not measured training speedups. Reference panels, when present, use unmatched workloads.</p>'
+    for note in notes:
+        page += '<p>' + html.escape(str(note)) + '</p>'
+    if policies:
+        page += '<p><strong>Displayed policies:</strong> ' + html.escape(', '.join(policies)) + '</p>'
+    if related:
+        page += '<article><h2>Focused views</h2><ul>' + ''.join(
+            f'<li><a href="{html.escape(item["path"], quote=True)}">{html.escape(item["label"])}</a></li>'
+            for item in related) + '</ul></article>'
     if pressure_note:
         page += '<article><strong>Check cache pressure before comparing policies</strong><p>' + html.escape(pressure_note) + '</p></article>'
     page += "".join(cards)
@@ -87,8 +107,8 @@ def main():
                 print(f"skip {name}: {reason}")
                 continue
             figures.extend(module.render(args))
-        selected = [r for r in rows if r["engine"] == args.engine and r["snapshots"] == str(args.snapshots == "on")]
-        gallery(args.output, figures, source, skipped, eviction_cells(selected))
+        selected = Run(args).rows
+        gallery(args.output, figures, source, skipped, eviction_cells(selected), sorted({r["policy"] for r in selected}))
         print(f"Gallery: {args.output / 'index.html'}")
     output_root.mkdir(parents=True, exist_ok=True)
     links = [f'<li><a href="{html.escape(d.name)}/index.html">{html.escape(d.name)}</a></li>'

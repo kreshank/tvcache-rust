@@ -26,7 +26,8 @@ def render(args):
             ax.bar(i, num(row, "net_fraction"), color=color(row["policy"]),
                    yerr=seed_errors([row], "net_fraction"), capsize=3,
                    error_kw={"elinewidth": 1})
-        ax.set_xticks(range(len(rows)), [label(r["policy"]) for r in rows], rotation=25, ha="right")
+        ax.set_xticks(range(len(rows)), [label(r["policy"]) for r in rows],
+                      rotation=65 if len(rows)>8 else 25, ha="right", fontsize=8 if len(rows)>8 else 10)
         ax.set_title(f"{workload.replace('_', ' ')} · {num(rows[0], 'budget_mib'):g} MiB")
         ax.set_ylabel("Fraction of uncached\ntool time saved")
         ax.axhline(0, lw=.8, color="#888888")
@@ -35,7 +36,8 @@ def render(args):
         SEED_CAPTION + "\n" +
         "Bars = modeled net savings after reconstruction and modeled overheads; one error bar per policy.\n"
         f"Each workload uses its {args.budget_position} nonzero tested capacity; synthetic costs, not training wall-clock savings.",
-        bottom=.23)]
+        bottom=.30 if len(ordered(exported))>8 else .23,
+        hspace=.85 if len(ordered(exported))>8 else .45)]
 
 
 if __name__ == "__main__":

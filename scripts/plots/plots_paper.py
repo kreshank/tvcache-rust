@@ -63,7 +63,7 @@ def render(args):
                 ax.set_ylim(0, 1)
         else:
             for ax in axes:
-                ax.axhline(1, color="#777777", ls=":", lw=1)
+                ax.axhline(1, color="#777777", ls="-", lw=1)
         legend(fig, axes[1])
         figures.append(run.save(fig, f"paper/{metric}_context", exported,
             SEED_CAPTION + "\n" +

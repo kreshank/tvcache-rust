@@ -4,7 +4,7 @@ import statistics
 
 from common import (Run, color, label, legend, main, num, ordered, percentage,
                     eviction_cells, capacity_axis, zero_capacity_control,
-                    aggregate_seeds, seed_errors, SEED_CAPTION)
+                    aggregate_seeds, seed_errors, SEED_CAPTION, line_style)
 
 
 def render(args):
@@ -47,16 +47,17 @@ def render(args):
                 controls.extend(num(r, "plotted_value") for r in points if num(r, "budget_mib") == 0)
                 ax.errorbar([num(r, "budget_mib") for r in curve], [num(r, "plotted_value") for r in curve],
                             yerr=seed_errors(curve, "plotted_value"), marker="o", ms=4, lw=2,
-                            elinewidth=1, capsize=3, color=color(policy), label=label(policy))
+                            elinewidth=1, capsize=3, color=color(policy), label=label(policy),
+                            linestyle=line_style(policy))
             if name == "hit_rate" and workload in validation:
-                ax.axhline(validation[workload]["repeat_fraction"], ls=":", color="#777777", lw=1.4,
+                ax.axhline(validation[workload]["repeat_fraction"], ls="-", color="#777777", lw=1.4,
                            label="Mean full-cache repeat ceiling")
             if workload in validation:
                 fits_at = validation[workload]["unique_cache_entry_bytes"] / 1024**2
                 minimum = min(num(r, "budget_mib") for r in rows if num(r, "budget_mib") > 0)
                 maximum = max(num(r, "budget_mib") for r in rows)
                 if minimum <= fits_at <= maximum:
-                    ax.axvline(fits_at, ls="--", color="#777777", lw=1.2, label="Mean full catalog fits")
+                    ax.axvline(fits_at, ls="-", color="#777777", lw=1.2, label="Mean full catalog fits")
                 if fits_at < maximum:
                     ax.axvspan(max(fits_at, minimum), maximum, color="#64748B", alpha=.08, zorder=0)
             raw = [r for r in source if (r.get("family") or r["workload"]) == workload]
@@ -64,10 +65,7 @@ def render(args):
             if cells and all(c["maximum_evictions"] == 0 for c in cells):
                 ax.text(.97, .06, "No capacity evictions in this sweep", transform=ax.transAxes,
                         ha="right", va="bottom", fontsize=8, color="#475569")
-            capacity_axis(ax)
-            budgets = sorted({num(r, "budget_mib") for r in rows if num(r, "budget_mib") > 0})
-            ax.set_xticks(budgets)
-            ax.set_xlim(budgets[0]/1.12, budgets[-1]*1.12)
+            capacity_axis(ax, [num(r, "budget_mib") for r in rows])
             zero_capacity_control(ax, controls)
             ax.set_ylabel(ylabel)
             percentage(ax)

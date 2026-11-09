@@ -1,7 +1,7 @@
 """Compare larger-trace policies using separate workload panels and seed ranges."""
 import statistics
 
-from common import Run, color, label, legend, main, num, ordered, percentage, capacity_axis
+from common import Run, color, label, legend, main, num, ordered, percentage, capacity_axis, line_style
 
 
 def render(args):
@@ -19,10 +19,10 @@ def render(args):
         raise ValueError("seed comparison requires the same completed seeds in every policy/capacity cell")
     figures = []
     for name, title, ylabel, metric in [
-        ("hit_rate", "Large traces · value hit rate", "Value hit rate", lambda r: num(r, "hit_rate")),
-        ("net_time_saved", "Large traces · modeled net time savings", "Fraction of uncached tool time saved",
+        ("hit_rate", "Seed means · value hit rate", "Value hit rate", lambda r: num(r, "hit_rate")),
+        ("net_time_saved", "Seed means · modeled net time savings", "Fraction of uncached tool time saved",
          lambda r: num(r, "net_time_saved_ms") / num(r, "baseline_tool_time_ms")),
-        ("evictions", "Large traces · observed eviction pressure", "Evicted entries per 1,000 requests",
+        ("evictions", "Seed means · reported eviction pressure", "Reported evicted entries per 1,000 requests",
          lambda r: 1000*num(r, "evictions") / num(r, "requests")),
     ]:
         aggregated = []
@@ -43,8 +43,8 @@ def render(args):
                             yerr=[[max(0, r["mean"]-r["minimum"]) for r in points],
                                   [max(0, r["maximum"]-r["mean"]) for r in points]],
                             marker="o", lw=2, ms=4, capsize=3, elinewidth=1,
-                            color=color(policy), label=label(policy))
-            capacity_axis(ax)
+                            color=color(policy), label=label(policy), linestyle=line_style(policy))
+            capacity_axis(ax, [r["budget_mib"] for r in rows])
             ax.set_ylabel(ylabel)
             if name != "evictions":
                 percentage(ax)
@@ -54,7 +54,7 @@ def render(args):
         legend(fig, panels[0][0])
         figures.append(run.save(fig, f"seed_summary/{name}", aggregated,
             f"Lines = equal-weight mean over {len(seed_sets[0])} seeds; error bars = observed min–max seed range, not confidence intervals.\n"
-            "Synthetic result-only replay; net savings include prefix reconstruction; modeled cache overheads are zero. No snapshots admitted."))
+            "Synthetic result-only replay; normalized net savings as exported by the evaluator. No snapshots admitted."))
     return figures
 
 

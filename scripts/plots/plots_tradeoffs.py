@@ -1,6 +1,6 @@
 """Matched comparisons against the original enforcer, averaged across seeds."""
 from common import (ORIGINAL, Run, color, label, legend, main, num, ordered, percentage,
-                    capacity_axis, zero_capacity_control, aggregate_seeds, seed_errors, SEED_CAPTION)
+                    capacity_axis, zero_capacity_control, aggregate_seeds, seed_errors, SEED_CAPTION, line_style)
 
 
 def render(args):
@@ -30,9 +30,10 @@ def render(args):
             controls.extend(num(r, "time_reduction_vs_original") for r in points if num(r, "budget_mib") == 0)
             ax.errorbar([num(r, "budget_mib") for r in curve], [num(r, "time_reduction_vs_original") for r in curve],
                         yerr=seed_errors(curve, "time_reduction_vs_original"), marker="o", ms=4,
-                        color=color(policy), lw=2, capsize=3, elinewidth=1, label=label(policy))
+                        color=color(policy), lw=2, capsize=3, elinewidth=1, label=label(policy),
+                        linestyle=line_style(policy))
         ax.axhline(0, color="#333333", lw=1)
-        capacity_axis(ax)
+        capacity_axis(ax, [num(r, "budget_mib") for r in rows])
         zero_capacity_control(ax, controls)
         ax.set_ylabel("Modeled time reduction\nvs original (higher is better)")
         percentage(ax)
@@ -53,8 +54,9 @@ def render(args):
             ax.errorbar([num(r, "budget_mib") for r in points],
                         [num(r, "plotted_microseconds_per_request") for r in points],
                         yerr=seed_errors(points, "plotted_microseconds_per_request"),
-                        marker="o", ms=4, lw=2, capsize=3, elinewidth=1, color=color(policy), label=label(policy))
-        capacity_axis(ax)
+                        marker="o", ms=4, lw=2, capsize=3, elinewidth=1, color=color(policy), label=label(policy),
+                        linestyle=line_style(policy))
+        capacity_axis(ax, [num(r, "budget_mib") for r in rows])
         ax.set_ylabel("Policy callback time (µs/request)")
         ax.set_yscale("symlog", linthresh=1)
     legend(fig, panels[0][0])

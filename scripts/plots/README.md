@@ -189,3 +189,43 @@ minimum and maximum across seeds (not confidence intervals). Ratios are computed
 per seed before averaging; comparisons against the original enforcer are paired
 by seed and capacity. CSVs include the mean, minimum, maximum, standard deviation,
 and seed count. Unseeded inputs retain their existing single-workload layout.
+
+## Imported learned-policy results
+
+A canonical per-run neural CSV can be validated and organized without replaying
+experiments:
+
+```sh
+python3 scripts/import_neural_results.py SOURCE.csv \
+  --output results/neural-validation-2026-11-08 --plot
+```
+
+The importer preserves the source CSV, checks the complete matched run grid and
+metric identities, and writes summaries and provenance. The full gallery uses
+all supplied policies. Additional `views/` galleries show baselines, fitted
+linear models, small networks and large networks; model views retain the
+original enforcer and persistent LFU as common controls. CSVs from different
+trace suites are kept separate. Reported eviction counts and callback timings
+retain the source's definitions/measurement limitations.
+
+Policy curves use solid lines and distinct colors; fitted `lin-belady` uses the
+blue previously used for untuned Linear TCG, which is hidden by default. Every positive
+capacity plot labels the actual tested budgets, including non-doubling values
+such as 1536 MiB. A run's optional `run.json` can supply `plot_notes` and
+`related_galleries` for the Markdown/browser gallery.
+
+### Saved policy selection
+
+A run's `run.json` may set `plot_policies` to keep its default figures focused
+without deleting any CSV rows. The neural importer defaults to baseline
+policies except untuned `linear`, plus `lin-belady` (fitted linear), `small-belady`
+and `big-belady`.
+The same selection is applied to curves, error bars, legends and pressure audits.
+Override it explicitly when needed:
+
+```sh
+python3 scripts/plots/plots_all.py --input results/neural-validation-2026-11-08 \
+  --policies original-ttl-and-watermark lfu-persistent lin-belady small-belady big-belady
+# Optional complete audit view:
+python3 scripts/plots/plots_all.py --input results/neural-validation-2026-11-08 --all-policies
+```

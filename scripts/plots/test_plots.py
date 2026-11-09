@@ -10,7 +10,8 @@ import unittest
 import matplotlib.pyplot as plt
 
 from common import (ORIGINAL, Run, num, read_csv, select_budget, eviction_cells,
-                    capacity_axis, zero_capacity_control, aggregate_seeds, seed_errors)
+                    capacity_axis, zero_capacity_control, aggregate_seeds, seed_errors,
+                    LEARNED_POLICIES, color, line_style)
 from plots_seed_summary import render as render_seed_summary
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -38,6 +39,31 @@ def write_rows(directory, rows):
 
 
 class PlotTests(unittest.TestCase):
+    def test_saved_policy_selection_filters_plots_without_changing_inputs(self):
+        source = self.root / "input"
+        original = fixture(source)
+        (source/'run.json').write_text(json.dumps({'plot_policies':[ORIGINAL,'linear']}))
+        args = self.args(source)
+        self.assertEqual({r['policy'] for r in Run(args).rows},{ORIGINAL,'linear'})
+        self.assertEqual(len(read_csv(source/'summary.csv',['policy'])),len(original))
+        args.all_policies = True
+        self.assertEqual(len(Run(args).rows),3)
+        args.all_policies = False
+        args.policies = ['future-policy']
+        self.assertEqual([r['policy'] for r in Run(args).rows],['future-policy'])
+        args.policies = ['missing-policy']
+        with self.assertRaisesRegex(ValueError,'requested policies absent'):
+            Run(args)
+
+    def test_learned_policy_colors_and_solid_lines(self):
+        from matplotlib.colors import to_hex
+        self.assertEqual(len({to_hex(color(p)) for p in LEARNED_POLICIES}),len(LEARNED_POLICIES))
+        self.assertEqual(to_hex(color('lin-belady')),to_hex(color('linear')))
+        self.assertEqual(line_style('lin-belady'),'-')
+        self.assertEqual(line_style('small-belady'),'-')
+        self.assertEqual(line_style('big-belady'),'-')
+        self.assertEqual(line_style(ORIGINAL),'-')
+
     def test_aggregation_keeps_seed_ratios_and_rejects_unmatched_seeds(self):
         rows = []
         for seed, baseline, remaining in ((42, 100, 50), (43, 200, 100), (44, 400, 100)):
@@ -97,6 +123,9 @@ class PlotTests(unittest.TestCase):
         self.assertEqual(ax.get_xscale(), "log")
         self.assertEqual(len(ax.lines), 0)
         self.assertIn("0 MiB control", ax.texts[0].get_text())
+        capacity_axis(ax, [512,1024,1536,2048])
+        self.assertEqual(list(ax.get_xticks()),[512,1024,1536,2048])
+        self.assertLess(ax.get_xlim()[1],4096)
 
     def test_equal_hits_do_not_imply_absence_of_eviction(self):
         rows = [dict(workload="x", policy=p, budget_mib=1, evictions=e, hit_rate=.5)
