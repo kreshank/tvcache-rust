@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["tqdm>=4.66,<5"]
+# ///
 """Generate policy-independent synthetic TVCache-style traces (Python 3.10+)."""
 from __future__ import annotations
 
@@ -8,8 +12,12 @@ import hashlib
 import json
 import math
 import random
+import sys
+from time import perf_counter
 from collections import Counter
 from pathlib import Path
+
+from tqdm import tqdm
 
 VERSION = "1.0.0"
 FORMAT = "tvcache-synthetic-v1"
@@ -285,7 +293,7 @@ def rollout_calls(c, task, variant):
                 prefix_runtime += node["runtime_ms"]
 
 
-def generate(c, output):
+def generate(c, output, *, progress=True):
     validate_config(c)
     output = Path(output)
     require(not output.exists() or not any(output.iterdir()),
@@ -298,7 +306,9 @@ def generate(c, output):
     index, rollout_index, clock = 0, 0, 0.0
     zipf = [1 / (i + 1) ** c["task_zipf_exponent"] for i in range(c["num_tasks"])]
     with (output / "nodes.jsonl").open("w", encoding="utf-8", newline="\n") as nf, \
-         (output / "events.jsonl").open("w", encoding="utf-8", newline="\n") as ef:
+         (output / "events.jsonl").open("w", encoding="utf-8", newline="\n") as ef, \
+         tqdm(total=c["num_rollouts"], desc="Generating", unit="rollout",
+              dynamic_ncols=True, mininterval=0.5, disable=not progress) as bar:
         for phase_index, (phase, length) in enumerate(zip(c["phases"], phase_lengths(c))):
             hot_n = max(1, math.ceil(c["num_tasks"] * phase["hot_task_fraction"]))
             hot = [(phase["hot_task_offset"] + i) % c["num_tasks"] for i in range(hot_n)]
@@ -338,6 +348,7 @@ def generate(c, output):
                     index += 1
                     clock += c["event_interval_ms"]
                 rollout_index += 1
+                bar.update(1)
             phase_counts.append({"phase": phase_index, "rollouts": length,
                                  "hot_tasks": [f"task_{i:04d}" for i in hot],
                                  "task_rollouts": dict(sorted(per_phase.items()))})
@@ -520,9 +531,11 @@ def main(argv=None):
     gen.add_argument("--out", required=True, type=Path, help="new or empty output directory")
     gen.add_argument("--seed", type=int, help="override the configured random seed")
     gen.add_argument("--rollouts", type=int, help="override the configured rollout count")
+    gen.add_argument("--no-progress", action="store_true", help="disable the generation progress bar")
     check = commands.add_parser("validate", help="check a generated trace directory")
     check.add_argument("trace", type=Path)
     args = parser.parse_args(argv)
+    started = perf_counter()
     try:
         if args.command == "generate":
             c = load_config(args.config)
@@ -530,13 +543,20 @@ def main(argv=None):
                 c["seed"] = args.seed
             if args.rollouts is not None:
                 c["num_rollouts"] = args.rollouts
-            result = generate(c, args.out)
+            result = generate(c, args.out, progress=not args.no_progress)
+            generated = perf_counter()
+            print("Validating trace...", file=sys.stderr)
             validate(args.out)
+            finished = perf_counter()
             print(json.dumps({"output": str(args.out), "validated": True,
                               **{k: result[k] for k in ("events", "rollouts", "unique_nodes", "repeat_fraction")}},
                              indent=2))
+            print(f"Completed {result['events']:,} accesses / {result['rollouts']:,} rollouts: "
+                  f"generation {generated-started:.2f}s, validation {finished-generated:.2f}s, "
+                  f"total {finished-started:.2f}s", file=sys.stderr)
         else:
             print(json.dumps(validate(args.trace), indent=2))
+            print(f"Validation completed in {perf_counter()-started:.2f}s", file=sys.stderr)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         parser.exit(2, f"error: {exc}\n")
 

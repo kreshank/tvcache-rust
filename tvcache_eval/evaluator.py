@@ -166,9 +166,9 @@ def evaluate(trace, *, memory_budget_bytes, policy=None, decisions=None, costs=N
         index, node_id = event["event_index"], event["node_id"]
         node = trace.nodes[node_id]
         estimate = estimated[node_id]
-        context = Context(MappingProxyType(entries.copy()), memory_budget_bytes,
-                          external_budget_bytes, memory, external, MappingProxyType(estimate))
         if policy is not None:
+            context = Context(MappingProxyType(entries.copy()), memory_budget_bytes,
+                              external_budget_bytes, memory, external, MappingProxyType(estimate))
             # The same estimates must drive cost-aware choices and accounting.
             policy_node = {**node, "runtime_ms": estimate["runtime_ms"],
                            "tool_cost_usd": estimate["tool_cost_usd"]}

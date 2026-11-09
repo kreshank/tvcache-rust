@@ -71,7 +71,11 @@ pub fn check_decisions(
     events: &[AccessRecord],
 ) -> Result<(), String> {
     if report.decisions.len() != events.len() {
-        return Err(format!("{} decisions for {} events", report.decisions.len(), events.len()));
+        return Err(format!(
+            "{} decisions for {} events",
+            report.decisions.len(),
+            events.len()
+        ));
     }
     let mut resident: BTreeMap<&str, u64> = BTreeMap::new();
     let mut used = 0u64;
@@ -92,7 +96,11 @@ pub fn check_decisions(
                 .ok_or_else(|| format!("event {at}: victim {victim} not resident"))?;
         }
         if d.admit {
-            let bytes = catalog.resolve(event).map_err(|e| e.to_string())?.0.cache_entry_bytes;
+            let bytes = catalog
+                .resolve(event)
+                .map_err(|e| e.to_string())?
+                .0
+                .cache_entry_bytes;
             resident.insert(&d.node_id, bytes);
             used += bytes;
         }
@@ -107,6 +115,148 @@ pub fn check_decisions(
 }
 struct Resident {
     meta: EntryMeta,
+    ancestors: Vec<EntryId>,
+    affected: Vec<EntryId>,
+    subtree_bytes: u64,
+}
+
+/// Maintain exactly the sorted subtree membership previously rebuilt per victim.
+fn register_resident(
+    residents: &mut BTreeMap<EntryId, Resident>,
+    meta: EntryMeta,
+    ancestors: Vec<EntryId>,
+) {
+    let id = meta.id.clone();
+    let bytes = meta.cache_entry_bytes;
+    residents.insert(
+        id.clone(),
+        Resident {
+            meta,
+            ancestors: ancestors.clone(),
+            affected: Vec::new(),
+            subtree_bytes: 0,
+        },
+    );
+    for ancestor in ancestors {
+        if let Some(root) = residents.get_mut(&ancestor) {
+            let at = root
+                .affected
+                .binary_search(&id)
+                .expect_err("new resident already in subtree");
+            root.affected.insert(at, id.clone());
+            root.subtree_bytes += bytes;
+        }
+    }
+}
+
+fn unregister_resident(residents: &mut BTreeMap<EntryId, Resident>, id: &EntryId) {
+    let removed = residents.remove(id).expect("victim must be resident");
+    for ancestor in removed.ancestors {
+        if let Some(root) = residents.get_mut(&ancestor) {
+            let at = root
+                .affected
+                .binary_search(id)
+                .expect("ancestor membership missing victim");
+            root.affected.remove(at);
+            root.subtree_bytes -= removed.meta.cache_entry_bytes;
+        }
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    #[test]
+    fn indexed_groups_match_pairwise_scan_including_task_boundaries_and_pruned_prefixes() {
+        let paths = [
+            ("a", vec!["x"]),
+            ("a", vec!["x", "y"]),
+            ("a", vec!["x", "y", "z"]),
+            ("a", vec!["x", "q"]),
+            ("b", vec!["x"]),
+            ("b", vec!["x", "y"]),
+            ("a", vec!["x", "y_extra"]),
+            ("a", vec!["missing", "child"]),
+        ];
+        let entries: Vec<_> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, (task, path))| Resident {
+                affected: Vec::new(),
+                subtree_bytes: 0,
+                ancestors: paths
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (t, p))| t == task && path.starts_with(p))
+                    .map(|(j, (t, _))| EntryId {
+                        task_id: t.to_string(),
+                        node_id: j.to_string(),
+                    })
+                    .collect(),
+                meta: EntryMeta {
+                    id: EntryId {
+                        task_id: task.to_string(),
+                        node_id: i.to_string(),
+                    },
+                    parent: None,
+                    path: path.iter().map(|s| s.to_string()).collect(),
+                    depth: path.len() as u64,
+                    mutates_state: true,
+                    tool: "test".into(),
+                    cache_entry_bytes: (i as u64 + 1) * 7,
+                    value_bytes: 1,
+                    runtime_ms: Some(1.0),
+                    tool_cost_usd: Some(0.0),
+                    snapshot: None,
+                },
+            })
+            .collect();
+        for mask in 0..(1 << entries.len()) {
+            let mut insertion_order: Vec<_> = entries
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, r)| r)
+                .collect();
+            if mask % 2 == 0 {
+                insertion_order.reverse();
+            }
+            // Admission happens after resident prefixes; reverse equal-depth
+            // peers to exercise ordering without inventing child-first inserts.
+            insertion_order.sort_by_key(|r| r.meta.path.len());
+            let mut resident = BTreeMap::new();
+            for entry in insertion_order {
+                register_resident(&mut resident, entry.meta.clone(), entry.ancestors.clone());
+            }
+            let check = |resident: &BTreeMap<EntryId, Resident>| {
+                for root in resident.values() {
+                    let expected: Vec<_> = resident
+                        .values()
+                        .filter(|r| {
+                            r.meta.id.task_id == root.meta.id.task_id
+                                && r.meta.path.starts_with(&root.meta.path)
+                        })
+                        .map(|r| r.meta.id.clone())
+                        .collect();
+                    assert_eq!(root.affected, expected);
+                    assert_eq!(
+                        root.subtree_bytes,
+                        expected
+                            .iter()
+                            .map(|id| resident[id].meta.cache_entry_bytes)
+                            .sum::<u64>()
+                    );
+                }
+            };
+            check(&resident);
+            let remove: Vec<_> = resident.keys().step_by(2).cloned().collect();
+            for id in remove {
+                unregister_resident(&mut resident, &id);
+                check(&resident);
+            }
+        }
+    }
 }
 
 /// None selects the original enforcer. Both modes enforce after insertion and
@@ -181,7 +331,9 @@ pub async fn replay(
         };
         let features = history.features(&entry, access);
         if let Some(p) = policy.as_mut() {
-            timed(&mut report, || p.on_access(&entry, &features, outcome, &access));
+            timed(&mut report, || {
+                p.on_access(&entry, &features, outcome, &access)
+            });
         }
         history.observe(&entry, access);
         report.requests += 1;
@@ -276,12 +428,7 @@ pub async fn replay(
             timed(&mut report, || p.on_insert(&entry, &context(used)));
         }
         report.decisions.last_mut().unwrap().admit = true;
-        residents.insert(
-            entry.id.clone(),
-            Resident {
-                meta: entry.clone(),
-            },
-        );
+        register_resident(&mut residents, entry.clone(), history.ancestors(&entry));
         report.peak_bytes_before_enforcement = report.peak_bytes_before_enforcement.max(used);
         if let Some(p) = policy.as_mut() {
             while used > capacity {
@@ -290,31 +437,14 @@ pub async fn replay(
                     .iter()
                     .map(|r| history.features(&r.meta, access))
                     .collect();
-                let groups: Vec<Vec<EntryId>> = roots
-                    .iter()
-                    .map(|root| {
-                        residents
-                            .values()
-                            .filter(|r| {
-                                r.meta.id.task_id == root.meta.id.task_id
-                                    && r.meta.path.starts_with(&root.meta.path)
-                            })
-                            .map(|r| r.meta.id.clone())
-                            .collect()
-                    })
-                    .collect();
                 let candidates: Vec<_> = roots
                     .iter()
-                    .zip(&groups)
                     .zip(&features)
-                    .map(|((root, ids), features)| EvictionCandidate {
+                    .map(|(root, features)| EvictionCandidate {
                         root: &root.meta,
-                        affected: ids,
+                        affected: &root.affected,
                         reclaimable: MemoryCharge {
-                            resident_bytes: ids
-                                .iter()
-                                .map(|id| residents[id].meta.cache_entry_bytes)
-                                .sum(),
+                            resident_bytes: root.subtree_bytes,
                             external_snapshot_bytes: 0,
                         },
                         features,
@@ -344,7 +474,7 @@ pub async fn replay(
                 tcg.size_in_bytes -= bytes;
                 used -= bytes;
                 for id in &affected {
-                    residents.remove(id);
+                    unregister_resident(&mut residents, id);
                     timed(&mut report, || {
                         p.on_remove(id, RemovalReason::Capacity, &context(used))
                     });
@@ -381,10 +511,15 @@ pub async fn replay(
                     }
                 }
                 let decision = report.decisions.last_mut().unwrap();
-                for id in residents.keys().filter(|id| !live.contains(*id)) {
+                let removed_ids: Vec<_> = residents
+                    .keys()
+                    .filter(|id| !live.contains(*id))
+                    .cloned()
+                    .collect();
+                for id in removed_ids {
                     decision.evict.push(id.node_id.clone());
+                    unregister_resident(&mut residents, &id);
                 }
-                residents.retain(|id, _| live.contains(id));
             }
         }
         // Evicting the just-inserted entry in the same event is, net, a bypass.

@@ -5,22 +5,30 @@ import json
 from pathlib import Path
 import sys
 
-from common import ROOT, parser, read_csv
+from common import ROOT, parser, read_csv, eviction_cells
 import plots_capacity
 import plots_tradeoffs
 import plots_reconstruction
 import plots_snapshots
 import plots_scaling
 import plots_paper
+import plots_seed_summary
 
-PLOTS = {"capacity": plots_capacity, "tradeoffs": plots_tradeoffs,
+PLOTS = {"seed_summary": plots_seed_summary, "capacity": plots_capacity, "tradeoffs": plots_tradeoffs,
          "reconstruction": plots_reconstruction, "snapshots": plots_snapshots,
          "scaling": plots_scaling, "paper": plots_paper}
 
 
-def gallery(directory, figures, source, skipped):
+def gallery(directory, figures, source, skipped, cells):
     cards, markdown = [], [f"# Plots: {source.name}", "", f"Input: `{source}`", "",
-        "Paper panels use unmatched real workloads. Local replay estimates are not measured training speedups.", ""]
+        "Replay estimates are not measured training speedups. Reference panels, when present, use unmatched workloads.", ""]
+    pressure_note = ""
+    if cells:
+        zero = sum(c["maximum_evictions"] == 0 for c in cells)
+        pressure_note = (f"Eviction check: {zero} of {len(cells)} nonzero workload/capacity cells had zero evictions "
+                         "across the selected policies. Such cells do not distinguish eviction strategies. "
+                         "This gallery only shows the input run named above; it does not automatically benchmark newly generated traces.")
+        markdown.extend([pressure_note, "", "[Capacity/eviction audit](capacity-audit.json)", ""])
     for path in figures:
         relative = path.relative_to(directory).as_posix()
         caption = json.loads(path.with_suffix(".json").read_text())["caption"]
@@ -34,12 +42,15 @@ def gallery(directory, figures, source, skipped):
         markdown.extend(["Skipped: " + "; ".join(skipped), ""])
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "README.md").write_text("\n".join(markdown))
+    (directory / "capacity-audit.json").write_text(json.dumps(cells, indent=2) + "\n")
     page = '<!doctype html><meta charset="utf-8"><title>TVCache plots</title><style>' \
         'body{font:16px system-ui;background:#f3f5f8;color:#253047;max-width:1400px;margin:32px auto;padding:0 24px}' \
         'article{background:white;border:1px solid #dde2ea;border-radius:12px;padding:24px;margin:24px 0}' \
         'img{width:100%;height:auto}h2{font-size:18px}p{line-height:1.5;white-space:pre-line}a{color:#0072b2}</style>'
     page += f'<h1>TVCache · {html.escape(source.name)}</h1><p>Input: {html.escape(str(source))}</p>'
-    page += '<p>Paper panels provide context across unmatched workloads. Replay estimates are not measured training speedups.</p>'
+    page += '<p>Replay estimates are not measured training speedups. Reference panels, when present, use unmatched workloads.</p>'
+    if pressure_note:
+        page += '<article><strong>Check cache pressure before comparing policies</strong><p>' + html.escape(pressure_note) + '</p></article>'
     page += "".join(cards)
     if skipped:
         page += '<p>Skipped: ' + html.escape("; ".join(skipped)) + '</p>'
@@ -63,6 +74,8 @@ def main():
             reason = None
             if name in args.skip:
                 reason = "requested"
+            elif name == "seed_summary" and not all(r.get("family") and r.get("seed") for r in rows):
+                reason = "family/seed columns absent"
             elif name == "scaling" and not (source / "load-summary.csv").exists():
                 reason = "load-summary.csv absent"
             elif name == "snapshots" and not any(r["engine"] == "python-reference" for r in rows):
@@ -74,7 +87,8 @@ def main():
                 print(f"skip {name}: {reason}")
                 continue
             figures.extend(module.render(args))
-        gallery(args.output, figures, source, skipped)
+        selected = [r for r in rows if r["engine"] == args.engine and r["snapshots"] == str(args.snapshots == "on")]
+        gallery(args.output, figures, source, skipped, eviction_cells(selected))
         print(f"Gallery: {args.output / 'index.html'}")
     output_root.mkdir(parents=True, exist_ok=True)
     links = [f'<li><a href="{html.escape(d.name)}/index.html">{html.escape(d.name)}</a></li>'

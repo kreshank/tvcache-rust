@@ -1,9 +1,9 @@
 """Keep snapshot-enabled Python experiments separate from Rust policies."""
-from common import Run, color, label, legend, main, num, percentage, read_csv
+from common import Run, color, label, legend, main, num, percentage, read_csv, select_budget
 
 
 def render(args):
-    """Plot modeled snapshot benefit and external storage at the smallest nonzero budget."""
+    """Plot modeled snapshot benefit and external storage at a selected capacity."""
     run = Run(args, summary=False)
     run.mode = "python-reference, paired snapshot-off/on"
     rows = [r for r in read_csv(run.source / "summary.csv", ["engine", "snapshots", "workload", "policy", "budget_mib"])
@@ -18,8 +18,7 @@ def render(args):
     storage_rows = []
     for ax, workload in panels:
         available = [r for r in rows if r["workload"] == workload]
-        budget = min(num(r, "budget_mib") for r in available)
-        available = [r for r in available if num(r, "budget_mib") == budget]
+        budget, available = select_budget(available, args.budget_position)
         storage_ax = storage_axes[workload]
         for i, policy in enumerate(sorted({r["policy"] for r in available})):
             pair = [r for r in available if r["policy"] == policy]
@@ -46,7 +45,7 @@ def render(args):
         storage_ax.set_ylabel("Peak external snapshot storage (GiB)")
         storage_ax.set_ylim(bottom=0)
     legend(fig, panels[0][0])
-    caption = ("Python independent-entry reference policies only; smallest nonzero tested memory capacity per workload.\n"
+    caption = (f"Python independent-entry reference policies only; {args.budget_position} nonzero tested memory capacity per workload.\n"
                "External cap and overheads follow input reports; current audit uses unlimited external storage and zero storage prices.")
     return [run.save(fig, "snapshots/net_benefit", exported, caption),
             run.save(storage_fig, "snapshots/external_storage", storage_rows, caption)]

@@ -54,17 +54,30 @@ def check_rust_bytes(trace, decisions, report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "results/compatibility-2026-11-07")
+    parser.add_argument("--datasets", nargs="+", choices=list(SWEEP), default=list(SWEEP))
+    parser.add_argument("--budgets-mib", nargs="+", type=int,
+                        help="override each selected workload's default capacity grid (integer MiB)")
     args = parser.parse_args()
+    if args.budgets_mib is not None:
+        if any(b < 0 or b > 2**32 - 1 for b in args.budgets_mib):
+            parser.error("budgets must be nonnegative MiB integers fitting Rust's u32 capacity argument")
+        if len(set(args.budgets_mib)) != len(args.budgets_mib):
+            parser.error("duplicate budgets would overwrite decision logs")
+    if len(set(args.datasets)) != len(args.datasets):
+        parser.error("duplicate datasets would overwrite results")
+    sweep = {name: sorted(args.budgets_mib) if args.budgets_mib is not None else SWEEP[name]
+             for name in args.datasets}
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    (output / "completion.json").unlink(missing_ok=True)
     rows = []
     validation = []
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    dump(output / "run.json", {"git_revision": revision, "budgets_mib": SWEEP,
+    dump(output / "run.json", {"git_revision": revision, "budgets_mib": sweep,
          "inputs": "data/synthetic only; real TCG traces unavailable",
          "costs": "synthetic fixture costs; default zero cache overheads; uncalibrated",
          "external_snapshot_budget_bytes": None})
-    for dataset, budgets in SWEEP.items():
+    for dataset, budgets in sweep.items():
         trace = load_trace(ROOT / "data/synthetic" / dataset)
         validation.append({"workload": dataset, **trace.validation})
         for mib in budgets:
@@ -88,7 +101,7 @@ def main():
                     assert math.isclose(metrics["gross_hit_cost_usd"], report["gross_tool_cost_usd_saved"], rel_tol=1e-9, abs_tol=1e-7)
                     if mib == 0:
                         assert metrics["hits"] == metrics["peak_memory_bytes"] == 0
-                    if mib == budgets[-1]:
+                    if mib * 1024**2 >= trace.validation["unique_cache_entry_bytes"]:
                         assert metrics["hits"] == trace.validation["repeat_accesses"]
                     dump(decisions_dir / f"{label}.scored.json", scored)
                     rows.append({"engine": "rust", "workload": dataset, "budget_mib": mib,
@@ -108,7 +121,7 @@ def main():
                         assert metrics["hits"] == metrics["peak_memory_bytes"] == 0
                     if name == "none":
                         assert metrics["net_time_saved_ms"] == metrics["net_cost_saved_usd"] == 0
-                    if name != "none" and mib == budgets[-1]:
+                    if name != "none" and mib * 1024**2 >= trace.validation["unique_cache_entry_bytes"]:
                         assert metrics["hits"] == trace.validation["repeat_accesses"]
                     dump(run_dir / f"python-{name}-snapshots-{snapshots}.json", scored)
                     rows.append({"engine": "python-reference", "workload": dataset,
@@ -125,7 +138,8 @@ def main():
          "python_reference_runs": sum(r["engine"] == "python-reference" for r in rows),
          "checks": ["trace hashes and causal features", "decision residency and budgets",
                     "Rust full-entry peak/final bytes", "hit and gross savings agreement",
-                    "zero-budget and no-cache controls", "full-capacity repeat ceiling"]})
+                    "no-cache controls; zero-budget controls when included",
+                    "repeat ceiling whenever capacity holds the full entry catalog"]})
     print(f"Completed {len(rows)} runs. Reports: {output}")
 
 

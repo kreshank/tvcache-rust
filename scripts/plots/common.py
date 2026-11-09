@@ -4,13 +4,14 @@ import csv
 import hashlib
 import json
 import math
+import statistics
 from pathlib import Path
 import sys
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import PercentFormatter
+from matplotlib.ticker import PercentFormatter, LogLocator, FuncFormatter
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT = ROOT / "results/compatibility-2026-11-07"
@@ -20,6 +21,8 @@ POLICIES = [ORIGINAL, "fifo", "linear", "lru", "lfu", "lfu-persistent", "none"]
 LABELS = {ORIGINAL: "Original enforcer", "fifo": "FIFO", "linear": "Linear TCG",
           "lru": "LRU", "lfu": "LFU", "lfu-persistent": "Persistent LFU", "none": "No cache"}
 COLORS = dict(zip(POLICIES, ["#303846", "#999999", "#0072B2", "#009E73", "#D55E00", "#CC79A7", "#666666"]))
+SEED_CAPTION = ("Equal-weight means across seeds; error bars = observed min–max seed range, not confidence intervals.\n"
+                "Ratios are computed per seed before averaging; unseeded inputs have no error bars.")
 plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10,
     "axes.spines.top": False, "axes.spines.right": False, "axes.titleweight": "bold",
     "axes.grid": True, "grid.alpha": .18, "axes.axisbelow": True,
@@ -32,6 +35,8 @@ def parser(description):
     p.add_argument("--output", type=Path, help="run output directory; default results/plots/INPUT_NAME")
     p.add_argument("--engine", choices=["rust", "python-reference"], default="rust")
     p.add_argument("--snapshots", choices=["off", "on"], default="off", help="reference-policy mode")
+    p.add_argument("--budget-position", choices=["smallest", "middle", "largest"], default="smallest",
+                   help="nonzero capacity selected for single-capacity figures; curves always use the full sweep")
     return p
 
 
@@ -57,9 +62,76 @@ def num(row, field):
     return value
 
 
+def select_budget(rows, position):
+    """Select a tested nonzero capacity; do not interpolate experiments."""
+    budgets = sorted({num(r, "budget_mib") for r in rows if num(r, "budget_mib") > 0})
+    if not budgets:
+        raise ValueError("single-capacity figures need a nonzero tested budget")
+    budget = budgets[{"smallest": 0, "middle": len(budgets)//2, "largest": -1}[position]]
+    return budget, [r for r in rows if num(r, "budget_mib") == budget]
+
+
 def ordered(rows):
     names = {r["policy"] for r in rows}
     return [p for p in POLICIES if p in names] + sorted(names - set(POLICIES))
+
+
+def aggregate_seeds(rows, fields):
+    """Average derived metrics by family/policy/capacity, keeping matched seed sets."""
+    if not rows:
+        return []
+    seeded = any(r.get("family") or r.get("seed") for r in rows)
+    if seeded and any(not r.get("family") or str(r.get("seed", "")) == "" for r in rows):
+        raise ValueError("seed aggregation requires family and seed for every row")
+    groups = {}
+    for row in rows:
+        family = row["family"] if seeded else row["workload"]
+        key = family, row["policy"], num(row, "budget_mib")
+        groups.setdefault(key, []).append(row)
+    seed_sets = [{str(r["seed"]) for r in group} for group in groups.values()] if seeded else []
+    if seeded and (any(len(s) != len(g) for s, g in zip(seed_sets, groups.values())) or
+                   any(s != seed_sets[0] for s in seed_sets)):
+        raise ValueError("seed aggregation requires the same completed seeds in every policy/capacity cell, without duplicates")
+    result = []
+    for (family, policy, budget), group in sorted(groups.items()):
+        if not seeded and len(group) != 1:
+            raise ValueError("duplicate unseeded workload/policy/capacity")
+        row = ({"workload": family, "family": family, "policy": policy, "budget_mib": budget,
+                "seed_ids": ",".join(sorted(str(r["seed"]) for r in group))}
+               if seeded else dict(group[0]))
+        row["seeds"] = len(group)
+        row["display_role"] = "curve" if budget > 0 else "off-axis zero control"
+        for field in fields:
+            values = [num(r, field) for r in group]
+            row.update({field: statistics.mean(values), field+"_minimum": min(values),
+                        field+"_maximum": max(values),
+                        field+"_standard_deviation": statistics.stdev(values) if len(values)>1 else 0})
+        result.append(row)
+    return result
+
+
+def seed_errors(rows, field):
+    """Asymmetric observed ranges around each mean, in Matplotlib's yerr format."""
+    if all(num(r, "seeds") <= 1 for r in rows):
+        return None
+    return [[max(0, num(r, field)-num(r, field+"_minimum")) for r in rows],
+            [max(0, num(r, field+"_maximum")-num(r, field)) for r in rows]]
+
+
+def eviction_cells(rows):
+    """Describe observed eviction pressure without assuming equal hits mean saturation."""
+    if not rows or any(r.get("evictions", "") == "" for r in rows):
+        return []
+    groups = {}
+    for row in rows:
+        budget = num(row, "budget_mib")
+        if budget > 0:
+            groups.setdefault((row["workload"], budget), []).append(row)
+    return [{"workload": workload, "budget_mib": budget,
+             "policies": len(group), "minimum_evictions": min(num(r, "evictions") for r in group),
+             "maximum_evictions": max(num(r, "evictions") for r in group),
+             "hit_rate_spread": max(num(r, "hit_rate") for r in group)-min(num(r, "hit_rate") for r in group)}
+            for (workload, budget), group in sorted(groups.items())]
 
 
 def label(policy):
@@ -80,6 +152,7 @@ class Run:
         if args.engine == "rust" and args.snapshots == "on":
             raise ValueError("Rust replay does not admit snapshots; use --engine python-reference")
         self.engine = args.engine
+        self.budget_position = args.budget_position
         self.mode = f"{args.engine}, snapshots {args.snapshots}"
         self.rows = []
         if summary:
@@ -127,6 +200,7 @@ class Run:
         sources = [self.source / n for n in ("summary.csv", "validation.json", "run.json", "load-summary.csv")]
         sources += sorted(REFERENCES.glob("*.csv")) if stem.startswith("paper/") else []
         provenance = {"caption": caption, "input_directory": str(self.source), "mode": self.mode,
+                      "budget_position": self.budget_position,
                       "sources_sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources if p.is_file()}}
         path.with_suffix(".json").write_text(json.dumps(provenance, indent=2) + "\n")
         print(path.with_suffix(".png"))
@@ -146,6 +220,24 @@ def legend(fig, ax):
 
 def percentage(ax):
     ax.yaxis.set_major_formatter(PercentFormatter(1))
+
+
+def capacity_axis(ax):
+    """Positive capacities use equal spacing for each doubling."""
+    ax.set_xscale("log", base=2)
+    ax.xaxis.set_major_locator(LogLocator(base=2, numticks=10))
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+    ax.set_xlabel("Cache capacity (MiB, base-2 log scale)")
+
+
+def zero_capacity_control(ax, values):
+    """Show measured zero-budget values without inventing a positive x coordinate."""
+    if values:
+        lo, hi = min(values), max(values)
+        value = f"{lo:.1%}" if math.isclose(lo, hi, abs_tol=1e-12) else f"{lo:.1%} to {hi:.1%}"
+        ax.text(.03, .97, f"0 MiB control: {value} (off log axis)", transform=ax.transAxes,
+                ha="left", va="top", fontsize=8, color="#475569",
+                bbox={"facecolor": "white", "edgecolor": "#cbd5e1", "alpha": .9})
 
 
 def main(render):

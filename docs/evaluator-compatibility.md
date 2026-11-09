@@ -25,6 +25,11 @@ and checks zero-budget, no-cache, and full-capacity controls. Each Rust run
 retains its decision log, original report, and scored report. `summary.csv`
 combines the results, and `completion.json` is written only after all checks pass.
 
+Use `--budgets-mib 64 256 1024 2048 4096` to override the capacity grid, and
+`--datasets memory_pressure` to select workloads. Keep each experiment in its
+own `--output` directory. The full-cache ceiling is checked whenever the given
+capacity holds the entire entry catalog; smaller custom grids remain valid.
+
 To score one existing Rust decision log directly:
 
 ```sh

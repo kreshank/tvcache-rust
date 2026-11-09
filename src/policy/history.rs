@@ -1,9 +1,10 @@
 //! Causal request history, separate from residency. Eviction never erases history.
 use super::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Default)]
 struct Observation {
+    id: Option<EntryId>,
     accesses: u64,
     last: Option<AccessContext>,
     subtree_accesses: u64,
@@ -12,15 +13,13 @@ struct Observation {
 }
 
 #[derive(Default)]
-pub(crate) struct ObservedHistory(BTreeMap<(String, Vec<String>), Observation>);
+pub(crate) struct ObservedHistory(HashMap<String, HashMap<Vec<String>, Observation>>);
 
 impl ObservedHistory {
     pub fn features(&self, entry: &EntryMeta, now: AccessContext) -> AccessFeatures {
-        let current = self.0.get(&(entry.id.task_id.clone(), entry.path.clone()));
-        let parent = self.0.get(&(
-            entry.id.task_id.clone(),
-            entry.path[..entry.path.len() - 1].to_vec(),
-        ));
+        let task = self.0.get(&entry.id.task_id);
+        let current = task.and_then(|t| t.get(entry.path.as_slice()));
+        let parent = task.and_then(|t| t.get(&entry.path[..entry.path.len() - 1]));
         let last = current.and_then(|o| o.last);
         AccessFeatures {
             access_count_before: current.map_or(0, |o| o.accesses),
@@ -39,20 +38,35 @@ impl ObservedHistory {
     }
 
     pub fn observe(&mut self, entry: &EntryMeta, now: AccessContext) {
+        let task = self.0.entry(entry.id.task_id.clone()).or_default();
         for depth in 0..=entry.path.len() {
-            let o = self
-                .0
-                .entry((entry.id.task_id.clone(), entry.path[..depth].to_vec()))
-                .or_default();
+            let prefix = &entry.path[..depth];
+            if !task.contains_key(prefix) {
+                task.insert(prefix.to_vec(), Observation::default());
+            }
+            let o = task.get_mut(prefix).unwrap();
             o.subtree_accesses += 1;
             o.subtree_last = Some(now);
             if depth == entry.path.len() {
+                if o.id.is_none() {
+                    o.id = Some(entry.id.clone());
+                }
                 o.accesses += 1;
                 o.last = Some(now);
             } else {
-                o.children.insert(entry.path[depth].clone());
+                if !o.children.contains(&entry.path[depth]) {
+                    o.children.insert(entry.path[depth].clone());
+                }
             }
         }
+    }
+
+    /// Only IDs already observed on this task's prefix; no future catalog access.
+    pub fn ancestors(&self, entry: &EntryMeta) -> Vec<EntryId> {
+        let task = self.0.get(&entry.id.task_id).unwrap();
+        (1..=entry.path.len())
+            .filter_map(|depth| task.get(&entry.path[..depth]).and_then(|o| o.id.clone()))
+            .collect()
     }
 }
 
@@ -94,6 +108,10 @@ mod tests {
         assert_eq!(before.events_since_last_access, None);
         history.observe(&root, at(0));
         history.observe(&child, at(3));
+        assert_eq!(
+            history.ancestors(&child),
+            vec![root.id.clone(), child.id.clone()]
+        );
         let after = history.features(&root, at(10));
         assert_eq!(after.access_count_before, 1);
         assert_eq!(after.subtree_access_count_before, 2);
@@ -104,6 +122,10 @@ mod tests {
         assert_eq!(history.features(&other_task, at(10)).access_count_before, 0);
         // Merely inspecting an unseen branch never changes observed structure.
         history.features(&entry("t", &["a", "future"]), at(11));
+        assert_eq!(
+            history.ancestors(&entry("t", &["a", "future"])),
+            vec![root.id.clone()]
+        );
         assert_eq!(history.features(&root, at(11)).observed_children_before, 1);
     }
 }

@@ -18,6 +18,10 @@ python3 scripts/plots/plots_capacity.py --input results/compatibility-2026-11-07
 # Python reference curves stay separate from Rust; separate mode directories:
 python3 scripts/plots/plots_capacity.py --input results/compatibility-2026-11-07 \
   --engine python-reference --snapshots on
+
+# Single-capacity figures can show the middle or largest tested budget:
+python3 scripts/plots/plots_all.py --input results/large-memory-2026-11-07 \
+  --budget-position middle
 ```
 
 An isolated environment was created for this run. To set up or reproduce it:
@@ -63,13 +67,74 @@ figure files remain on disk but are not silently added to it.
 
 | Script | Figures |
 | --- | --- |
+| `plots_seed_summary.py` | Per-family seed means/ranges for hit rate, normalized net savings, and eviction pressure |
 | `plots_capacity.py` | Hit rate and modeled time/USD savings against MiB; original included |
 | `plots_tradeoffs.py` | Matched-budget time improvement over original; callback CPU cost |
-| `plots_reconstruction.py` | Gross versus net savings at smallest nonzero budget |
+| `plots_reconstruction.py` | Net savings only at a selected nonzero budget; reconstruction included |
 | `plots_snapshots.py` | Python-reference snapshot savings and external storage |
 | `plots_scaling.py` | Measured mean/p95 lookup latency and burst throughput |
 | `plots_paper.py` | Versioned paper hit-rate / median-speedup references beside local estimates |
 | `plots_all.py` | All applicable families, run galleries, and top-level index |
+
+Capacity curves always show the entire sweep. `--budget-position` selects the
+smallest (default), middle, or largest nonzero tested budget separately for each
+workload in reconstruction, snapshot, and paper-context panels. For an even
+number of budgets, middle selects the upper middle entry. These panels label
+the actual MiB; no measurements are interpolated. Capacity curves also mark the
+memory needed for the complete unique-entry catalog when validation is present.
+
+All capacity x axes (including relative gains and policy CPU cost) use a
+**base-2 logarithmic scale**, so each doubling occupies the same distance.
+Zero-capacity measurements cannot lie on that axis: they appear as a separate
+annotated control and remain in the relevant CSVs with
+`display_role = off-axis zero control`. They are never shifted to an invented
+positive capacity or connected to the positive-capacity curves. The timing
+figure already excludes zero-capacity cases from its callback comparison.
+
+Every gallery also reports how many nonzero workload/capacity cells had zero
+evictions and saves the per-cell counts in `capacity-audit.json`. Capacity
+figures shade the region that holds the full entry catalog and label sweeps
+with no observed evictions. Coincident policy curves there are expected, not
+evidence of a meaningful eviction-policy comparison. Equal hit rates alone are
+never used to infer the absence of eviction.
+
+Generating new raw trace directories does not change existing benchmark CSVs
+or graphs. Replay the policies on the new inputs first, then pass that result
+directory to the plot scripts. The gallery names its exact source directory.
+
+## Larger-capacity experiments
+
+The initial grids span roughly 10–100% of each synthetic entry catalog. The
+first three catalogs contain only 6.9–9.8 MiB; `memory_pressure` contains about
+1321 MiB. More memory than the catalog requires eliminates capacity eviction,
+so policies reach the same repeat ceiling. Snapshot bytes are a separate,
+potentially much larger external storage budget. Replay byte budgets are
+simulated charges, not allocated process RSS or sandbox RAM measurements.
+
+Sweep explicit capacities and keep their results in a new input directory:
+
+```sh
+python3 scripts/benchmark_compatibility.py \
+  --budgets-mib 64 256 1024 2048 4096 \
+  --output results/large-memory-2026-11-07
+python3 scripts/plots/plots_all.py --input results/large-memory-2026-11-07 \
+  --budget-position middle
+```
+
+`--datasets memory_pressure` can restrict the runner to one workload. Capacity
+arguments are integer MiB. Custom grids need not start at zero or end above the
+catalog size: full-cache checks run only when the tested capacity actually
+holds the catalog. For larger capacities to distinguish policies, future traces
+must also have larger active working sets, instead of merely repeating the
+same small set of entries.
+
+For the newly generated multi-GiB trace suite, use
+`scripts/replay_large_traces.py` rather than the small-fixture runner. See
+[large-trace evaluation](../../docs/large-trace-evaluation.md). Its results
+contain `family` and `seed` columns, enabling the `seed_summary` plot family.
+The batch plotter skips seed summaries when these columns are absent. For an
+overview containing only those three figures, pass
+`--skip capacity tradeoffs reconstruction snapshots scaling paper`.
 
 ## Input contract and checks
 
@@ -114,3 +179,13 @@ execution times. Local burst throughput also differs from controlled offered
 RPS. These figures provide context, not a claim of reproducing or beating the
 paper. Adding another paper/version means adding its own reference directory
 with provenance and a plot using compatible metric definitions.
+
+## Seed averaging and error bars
+
+When inputs contain `family` and `seed`, capacity, tradeoff, reconstruction,
+paper-context local panels, and seed-summary plots combine seeds by workload
+family. Each point/bar is an equal-weight mean; error bars span the observed
+minimum and maximum across seeds (not confidence intervals). Ratios are computed
+per seed before averaging; comparisons against the original enforcer are paired
+by seed and capacity. CSVs include the mean, minimum, maximum, standard deviation,
+and seed count. Unseeded inputs retain their existing single-workload layout.
